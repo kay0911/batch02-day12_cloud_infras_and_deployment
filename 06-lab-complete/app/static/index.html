@@ -682,9 +682,13 @@
                 if (response.ok) {
                     const data = await response.json();
                     
-                    // Parse if the agent had triggered tool calling
-                    // We can inspect the console log or display the response directly.
-                    // If we want to show a live demo of tools, let's look at the answer.
+                    // Display any tool calls that were executed
+                    if (data.tool_calls && data.tool_calls.length > 0) {
+                        data.tool_calls.forEach(tool => {
+                            appendToolCall(tool.name, tool.args, tool.response);
+                        });
+                    }
+                    
                     // We also fetch metrics to update daily budget cost.
                     fetchMetrics();
                     

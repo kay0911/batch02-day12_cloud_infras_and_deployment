@@ -86,8 +86,9 @@ def save_history(user_id: str, history: list, ttl_seconds: int = 3600):
     else:
         _memory_store[f"history:{user_id}"] = history
 
-def call_llm(question: str, history: list) -> str:
+def call_llm(question: str, history: list) -> tuple[str, list]:
     """Gọi Gemini API nếu có GEMINI_API_KEY, ngược lại dùng mock LLM."""
+    executed_tools = []
     if settings.gemini_api_key:
         # Chuyển đổi định dạng history cho Gemini API
         contents = []
@@ -120,32 +121,28 @@ def call_llm(question: str, history: list) -> str:
                     
                     candidate = res_data.get("candidates", [{}])[0]
                     content = candidate.get("content", {})
-                    parts = content.get("parts", [{}])
-                    first_part = parts[0]
+                    parts = content.get("parts", [])
                     
-                    # Nếu Gemini yêu cầu gọi tool
-                    if "functionCall" in first_part:
-                        fn_call = first_part["functionCall"]
+                    # Find if there is a functionCall in any part
+                    fn_call = None
+                    for part in parts:
+                        if "functionCall" in part:
+                            fn_call = part["functionCall"]
+                            break
+                    
+                    if fn_call:
                         name = fn_call["name"]
                         args = fn_call.get("args", {})
-                        
                         logger.info(f"Gemini requested tool call: {name} with args {args}")
                         
-                        # Chạy tool cục bộ
                         tool_res = execute_tool(name, args)
-                        
-                        # Thêm kết quả của tool vào chuỗi hội thoại gửi tiếp cho Gemini
-                        contents.append({
-                            "role": "model",
-                            "parts": [
-                                {
-                                    "functionCall": {
-                                        "name": name,
-                                        "args": args
-                                    }
-                                }
-                            ]
+                        executed_tools.append({
+                            "name": name,
+                            "args": args,
+                            "response": tool_res
                         })
+                        
+                        contents.append(content)
                         contents.append({
                             "role": "function",
                             "parts": [
@@ -159,10 +156,11 @@ def call_llm(question: str, history: list) -> str:
                         })
                         continue
                     
-                    elif "text" in first_part:
-                        return first_part["text"]
+                    text_parts = [p["text"] for p in parts if "text" in p]
+                    if text_parts:
+                        return "".join(text_parts), executed_tools
                     else:
-                        raise ValueError(f"Unexpected part format from Gemini: {first_part}")
+                        raise ValueError(f"Unexpected response parts from Gemini (no text or functionCall): {parts}")
                         
             except urllib.error.HTTPError as e:
                 error_msg = e.read().decode("utf-8")
@@ -174,7 +172,7 @@ def call_llm(question: str, history: list) -> str:
                 
         raise HTTPException(status_code=500, detail="Gemini tool call loop limit exceeded")
     else:
-        return llm_ask(question)
+        return llm_ask(question), []
 
 # ─────────────────────────────────────────────────────────
 # Lifespan
@@ -253,6 +251,7 @@ class AskResponse(BaseModel):
     answer: str
     model: str
     timestamp: str
+    tool_calls: list[dict] = Field(default=[], description="List of tools executed during the run")
 
 # ─────────────────────────────────────────────────────────
 # Endpoints
@@ -311,7 +310,7 @@ async def ask_agent(
     history.append({"role": "user", "content": body.question})
 
     # Gọi mô hình LLM xử lý câu hỏi
-    answer = call_llm(body.question, history)
+    answer, tool_calls = call_llm(body.question, history)
 
     # Lưu kết quả trả lời vào lịch sử cuộc trò chuyện
     history.append({"role": "assistant", "content": answer})
@@ -326,6 +325,7 @@ async def ask_agent(
         answer=answer,
         model=settings.llm_model,
         timestamp=datetime.now(timezone.utc).isoformat(),
+        tool_calls=tool_calls,
     )
 
 @app.get("/health", tags=["Operations"])

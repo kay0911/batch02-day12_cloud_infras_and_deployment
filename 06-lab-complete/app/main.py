@@ -25,6 +25,7 @@ import urllib.request
 import urllib.error
 
 from fastapi import FastAPI, HTTPException, Security, Depends, Request, Response
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -34,6 +35,7 @@ from app.config import settings
 from app.auth import verify_api_key
 from app.rate_limiter import check_rate_limit
 from app.cost_guard import check_and_record_cost
+from app.skills import GEMINI_TOOLS, execute_tool
 
 # Mock LLM (thay bằng OpenAI/Anthropic khi có API key)
 from utils.mock_llm import ask as llm_ask
@@ -96,30 +98,81 @@ def call_llm(question: str, history: list) -> str:
                 "parts": [{"text": msg["content"]}]
             })
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.llm_model}:generateContent?key={settings.gemini_api_key}"
-        headers = {"Content-Type": "application/json"}
-        body = {
-            "contents": contents
-        }
-        
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(body).encode("utf-8"),
-            headers=headers,
-            method="POST"
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=15) as response:
-                res_body = response.read().decode("utf-8")
-                res_data = json.loads(res_body)
-                return res_data["candidates"][0]["content"]["parts"][0]["text"]
-        except urllib.error.HTTPError as e:
-            error_msg = e.read().decode("utf-8")
-            logger.error(f"Gemini API HTTP Error: {e.code} - {error_msg}")
-            raise HTTPException(status_code=e.code, detail=f"Gemini API Error: {error_msg}")
-        except Exception as e:
-            logger.error(f"Gemini API Connection Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to connect to Gemini API: {str(e)}")
+        max_turns = 4
+        for turn in range(max_turns):
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.llm_model}:generateContent?key={settings.gemini_api_key}"
+            headers = {"Content-Type": "application/json"}
+            body = {
+                "contents": contents,
+                "tools": GEMINI_TOOLS
+            }
+            
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers=headers,
+                method="POST"
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    res_body = response.read().decode("utf-8")
+                    res_data = json.loads(res_body)
+                    
+                    candidate = res_data.get("candidates", [{}])[0]
+                    content = candidate.get("content", {})
+                    parts = content.get("parts", [{}])
+                    first_part = parts[0]
+                    
+                    # Nếu Gemini yêu cầu gọi tool
+                    if "functionCall" in first_part:
+                        fn_call = first_part["functionCall"]
+                        name = fn_call["name"]
+                        args = fn_call.get("args", {})
+                        
+                        logger.info(f"Gemini requested tool call: {name} with args {args}")
+                        
+                        # Chạy tool cục bộ
+                        tool_res = execute_tool(name, args)
+                        
+                        # Thêm kết quả của tool vào chuỗi hội thoại gửi tiếp cho Gemini
+                        contents.append({
+                            "role": "model",
+                            "parts": [
+                                {
+                                    "functionCall": {
+                                        "name": name,
+                                        "args": args
+                                    }
+                                }
+                            ]
+                        })
+                        contents.append({
+                            "role": "function",
+                            "parts": [
+                                {
+                                    "functionResponse": {
+                                        "name": name,
+                                        "response": tool_res
+                                    }
+                                }
+                            ]
+                        })
+                        continue
+                    
+                    elif "text" in first_part:
+                        return first_part["text"]
+                    else:
+                        raise ValueError(f"Unexpected part format from Gemini: {first_part}")
+                        
+            except urllib.error.HTTPError as e:
+                error_msg = e.read().decode("utf-8")
+                logger.error(f"Gemini API HTTP Error: {e.code} - {error_msg}")
+                raise HTTPException(status_code=e.code, detail=f"Gemini API Error: {error_msg}")
+            except Exception as e:
+                logger.error(f"Gemini API Connection Error: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to connect to Gemini API: {str(e)}")
+                
+        raise HTTPException(status_code=500, detail="Gemini tool call loop limit exceeded")
     else:
         return llm_ask(question)
 
@@ -206,7 +259,13 @@ class AskResponse(BaseModel):
 # ─────────────────────────────────────────────────────────
 
 @app.get("/", tags=["Info"])
-def root():
+def root(request: Request):
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        static_file = os.path.join(os.path.dirname(__file__), "static", "index.html")
+        if os.path.exists(static_file):
+            with open(static_file, "r", encoding="utf-8") as f:
+                return HTMLResponse(content=f.read(), status_code=200)
     return {
         "app": settings.app_name,
         "version": settings.app_version,
@@ -215,6 +274,7 @@ def root():
             "ask": "POST /ask (requires X-API-Key)",
             "health": "GET /health",
             "ready": "GET /ready",
+            "metrics": "GET /metrics (requires X-API-Key)"
         },
     }
 

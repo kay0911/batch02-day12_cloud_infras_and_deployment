@@ -47,7 +47,7 @@ curl -X POST https://testrailway-production-6eb5.up.railway.app/ask \
 {
   "question": "What is deployment?",
   "answer": "This is a mock response from LLM for prompt: What is deployment?",
-  "model": "gpt-4o-mini",
+  "model": "gemini-3.1-flash-lite",
   "timestamp": "2026-06-12T07:41:00Z"
 }
 ```

@@ -18,7 +18,8 @@ class Settings:
 
     # LLM
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o-mini"))
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-1.5-flash"))
 
     # Security
     agent_api_key: str = field(default_factory=lambda: os.getenv("AGENT_API_KEY", "dev-key-change-me"))
@@ -47,8 +48,8 @@ class Settings:
                 raise ValueError("AGENT_API_KEY must be set in production!")
             if self.jwt_secret == "dev-jwt-secret":
                 raise ValueError("JWT_SECRET must be set in production!")
-        if not self.openai_api_key:
-            logger.warning("OPENAI_API_KEY not set — using mock LLM")
+        if not self.openai_api_key and not self.gemini_api_key:
+            logger.warning("Neither OPENAI_API_KEY nor GEMINI_API_KEY set — using mock LLM")
         return self
 
 

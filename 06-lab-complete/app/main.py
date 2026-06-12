@@ -21,6 +21,8 @@ import logging
 import json
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+import urllib.request
+import urllib.error
 
 from fastapi import FastAPI, HTTPException, Security, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -81,6 +83,45 @@ def save_history(user_id: str, history: list, ttl_seconds: int = 3600):
         _redis.setex(f"history:{user_id}", ttl_seconds, json.dumps(history))
     else:
         _memory_store[f"history:{user_id}"] = history
+
+def call_llm(question: str, history: list) -> str:
+    """Gọi Gemini API nếu có GEMINI_API_KEY, ngược lại dùng mock LLM."""
+    if settings.gemini_api_key:
+        # Chuyển đổi định dạng history cho Gemini API
+        contents = []
+        for msg in history:
+            role = "model" if msg["role"] == "assistant" else "user"
+            contents.append({
+                "role": role,
+                "parts": [{"text": msg["content"]}]
+            })
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.llm_model}:generateContent?key={settings.gemini_api_key}"
+        headers = {"Content-Type": "application/json"}
+        body = {
+            "contents": contents
+        }
+        
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as response:
+                res_body = response.read().decode("utf-8")
+                res_data = json.loads(res_body)
+                return res_data["candidates"][0]["content"]["parts"][0]["text"]
+        except urllib.error.HTTPError as e:
+            error_msg = e.read().decode("utf-8")
+            logger.error(f"Gemini API HTTP Error: {e.code} - {error_msg}")
+            raise HTTPException(status_code=e.code, detail=f"Gemini API Error: {error_msg}")
+        except Exception as e:
+            logger.error(f"Gemini API Connection Error: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to connect to Gemini API: {str(e)}")
+    else:
+        return llm_ask(question)
 
 # ─────────────────────────────────────────────────────────
 # Lifespan
@@ -210,7 +251,7 @@ async def ask_agent(
     history.append({"role": "user", "content": body.question})
 
     # Gọi mô hình LLM xử lý câu hỏi
-    answer = llm_ask(body.question)
+    answer = call_llm(body.question, history)
 
     # Lưu kết quả trả lời vào lịch sử cuộc trò chuyện
     history.append({"role": "assistant", "content": answer})
@@ -231,7 +272,9 @@ async def ask_agent(
 def health():
     """Liveness probe. Platform restarts container if this fails."""
     status = "ok"
-    checks = {"llm": "mock" if not settings.openai_api_key else "openai"}
+    checks = {
+        "llm": "gemini" if settings.gemini_api_key else ("mock" if not settings.openai_api_key else "openai")
+    }
     return {
         "status": status,
         "version": settings.app_version,

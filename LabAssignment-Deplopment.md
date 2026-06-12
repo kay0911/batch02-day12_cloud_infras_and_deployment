@@ -1,3 +1,6 @@
+**Student Name:** Trần Duy Khánh
+**StudentID:** 2A202600592
+
 # Deployment Information
 
 Triển khai production AI Agent hoàn chỉnh kết hợp đầy đủ cơ chế API Key Authentication, Sliding Window Rate Limiting (Redis-backed), Cost Guard (Redis-backed), và Stateless Session History (Redis-backed).

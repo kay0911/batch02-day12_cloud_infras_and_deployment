@@ -204,8 +204,9 @@
         /* Chat Workspace */
         .chat-area {
             display: grid;
-            grid-template-rows: 1fr auto;
+            grid-template-rows: minmax(0, 1fr) auto;
             height: 100%;
+            overflow: hidden;
             position: relative;
             z-index: 1;
         }
